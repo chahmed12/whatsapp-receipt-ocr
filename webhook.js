@@ -134,6 +134,7 @@ app.post(WEBHOOK_PATH, async (req, res) => {
     }
 });
 
+
 async function rejoindreLeGroupe() {
     try {
         const response = await axios.post(
