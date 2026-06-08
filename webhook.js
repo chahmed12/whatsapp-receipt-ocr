@@ -1,7 +1,6 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -9,159 +8,140 @@ const morgan = require('morgan');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const WEBHOOK_PATH = process.env.WEBHOOK_PATH || '/webhook';
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
-const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
-const API_VERSION = process.env.WHATSAPP_API_VERSION || 'v21.0';
-const MEDIA_URL = `https://graph.facebook.com/${API_VERSION}`;
 const DB_PATH = process.env.DB_PATH || 'data/recus.db';
 
+// ─── Green API Config ────────────────────────────────────────────────────────
+const GREEN_API_ID = process.env.GREEN_API_ID;       // ex: 1234567890
+const GREEN_API_TOKEN = process.env.GREEN_API_TOKEN;    // ex: abcdef1234...
+const GREEN_API_BASE = `https://api.green-api.com/waInstance${GREEN_API_ID}`;
+
+// ID du groupe de l'association (format: XXXXXXXXXXX@g.us)
+// Récupéré via /getChats après avoir rejoint le groupe
+const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID;
+
 app.use(morgan('combined'));
-app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf.toString(); } }));
+app.use(express.json());
 
-function verifySignature(req, res, buf) {
-    const signature = req.headers['x-hub-signature-256'];
-    if (!signature) return false;
-    const expected = crypto
-        .createHmac('sha256', process.env.APP_SECRET)
-        .update(JSON.stringify(req.body))
-        .digest('hex');
-    return crypto.timingSafeEqual(
-        Buffer.from(signature.replace('sha256=', '')),
-        Buffer.from(expected)
-    );
-}
-
-async function sendReaction(to, messageId, emoji) {
+// ─── Envoyer une réaction (Green API ne supporte pas les réactions,
+//     on envoie un message texte à la place) ───────────────────────────────
+async function sendReaction(chatId, emoji) {
     try {
         await axios.post(
-            `${MEDIA_URL}/${PHONE_NUMBER_ID}/messages`,
+            `${GREEN_API_BASE}/sendMessage/${GREEN_API_TOKEN}`,
             {
-                messaging_product: 'whatsapp',
-                recipient_type: 'individual',
-                to,
-                type: 'reaction',
-                reaction: { message_id: messageId, emoji }
-            },
-            { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } }
-        );
-        console.log(`[REACTION] ${emoji} envoyée à ${to} sur message ${messageId}`);
-    } catch (err) {
-        console.error(`[REACTION] Erreur: ${err.response?.data?.error?.message || err.message}`);
-    }
-}
-
-app.get(WEBHOOK_PATH, (req, res) => {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-
-    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-        console.log('[WEBHOOK] Verifié avec succès');
-        return res.status(200).send(challenge);
-    }
-    res.sendStatus(403);
-});
-
-app.post(WEBHOOK_PATH, async (req, res) => {
-    res.sendStatus(200);
-
-    const body = req.body;
-    if (!body?.entry?.[0]?.changes?.[0]?.value?.messages) return;
-
-    for (const message of body.entry[0].changes[0].value.messages) {
-        if (message.type !== 'image') continue;
-
-        const telephone = message.from;
-        const caption = (message.image.caption || '').trim();
-        const mediaId = message.image.id;
-        const messageId = message.id;
-
-        console.log(`[RECU] De: ${telephone}, Légende: "${caption}", MediaID: ${mediaId}`);
-
-        try {
-            const mediaResp = await axios.get(`${MEDIA_URL}/${mediaId}`, {
-                headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
-            });
-            const mediaUrl = mediaResp.data.url;
-
-            const imageResp = await axios.get(mediaUrl, {
-                headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-                responseType: 'stream'
-            });
-
-            const timestamp = Date.now();
-            const safePhone = telephone.replace(/\D/g, '');
-            const imageName = `PHOTO-${safePhone}-${timestamp}.jpg`;
-            const imagePath = path.join(__dirname, 'data', 'images', imageName);
-            const writer = fs.createWriteStream(imagePath);
-
-            imageResp.data.pipe(writer);
-            await new Promise((resolve, reject) => {
-                writer.on('finish', resolve);
-                writer.on('error', reject);
-            });
-
-            console.log(`[IMAGE] Sauvegardée: ${imagePath}`);
-
-            const pythonScript = path.join(__dirname, 'ocr', 'pipeline.py');
-            const proc = spawn('python', [pythonScript, imagePath, caption, telephone, DB_PATH]);
-
-            let stdout = '', stderr = '';
-            proc.stdout.on('data', d => stdout += d.toString());
-            proc.stderr.on('data', d => stderr += d.toString());
-            proc.on('close', async code => {
-                if (code === 0) {
-                    try {
-                        const result = JSON.parse(stdout.trim().split('\n').pop());
-                        console.log(`[OCR] Succès: ${JSON.stringify(result)}`);
-                        const emoji = result.statut_ocr === 'ok' ? '✅' : '⏳';
-                        await sendReaction(telephone, messageId, emoji);
-                    } catch (e) {
-                        console.log(`[OCR] Sortie brute: ${stdout}`);
-                        await sendReaction(telephone, messageId, '⏳');
-                    }
-                } else {
-                    console.error(`[OCR] Erreur (code ${code}): ${stderr}`);
-                    await sendReaction(telephone, messageId, '❌');
-                }
-            });
-        } catch (err) {
-            console.error(`[ERREUR] Traitement message: ${err.message}`);
-        }
-    }
-});
-
-
-async function rejoindreLeGroupe() {
-    try {
-        const response = await axios.post(
-            `https://graph.facebook.com/v21.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/groups`,
-            {
-                messaging_product: "whatsapp", // Ajouté (Obligatoire)
-                invite_code: "L4ee7bAJSYf99tu2TBc7SM",
-                subject: "Association Jeddetta" // Ajouté (Obligatoire - Nom de votre groupe)
-            },
-            {
-                headers: {
-                    'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
-                    'Content-Type': 'application/json'
-                }
+                chatId,
+                message: emoji
             }
         );
-        console.log("✅ Le Bot a rejoint le groupe avec succès !", response.data);
-    } catch (error) {
-        console.error("❌ Erreur lors de l'inscription au groupe :", error.response?.data || error.message);
+        console.log(`[REACTION] ${emoji} envoyée dans ${chatId}`);
+    } catch (err) {
+        console.error(`[REACTION] Erreur: ${err.response?.data || err.message}`);
     }
 }
 
-// Lancement automatique au démarrage
-rejoindreLeGroupe();
+// ─── Télécharger le fichier média depuis Green API ──────────────────────────
+async function downloadMedia(downloadUrl) {
+    const response = await axios.get(downloadUrl, { responseType: 'arraybuffer' });
+    return Buffer.from(response.data);
+}
 
+// ─── Webhook principal ───────────────────────────────────────────────────────
+// Green API envoie un POST pour chaque message reçu
+app.post('/webhook', async (req, res) => {
+    res.sendStatus(200); // Toujours répondre 200 immédiatement
+
+    const body = req.body;
+
+    // Ignorer tout ce qui n'est pas un message entrant
+    if (body.typeWebhook !== 'incomingMessageReceived') return;
+
+    const { messageData, senderData } = body;
+
+    // Ignorer les messages qui ne sont pas des images
+    if (messageData?.typeMessage !== 'imageMessage') return;
+
+    // Filtrer : seulement le groupe de l'association
+    const chatId = senderData?.chatId;
+    if (GROUP_CHAT_ID && chatId !== GROUP_CHAT_ID) {
+        console.log(`[FILTRE] Message ignoré depuis: ${chatId}`);
+        return;
+    }
+
+    const downloadUrl = messageData.fileMessageData?.downloadUrl;
+    const caption = (messageData.fileMessageData?.caption || '').trim();
+    const telephone = senderData?.sender || chatId;
+    const senderName = senderData?.senderName || telephone;
+
+    console.log(`[RECU] De: ${senderName} (${telephone}), Légende: "${caption}"`);
+
+    if (!downloadUrl) {
+        console.error('[ERREUR] downloadUrl manquant');
+        return;
+    }
+
+    try {
+        // 1. Télécharger l'image
+        const imageBuffer = await downloadMedia(downloadUrl);
+
+        const timestamp = Date.now();
+        const safePhone = telephone.replace(/\D/g, '');
+        const imageName = `PHOTO-${safePhone}-${timestamp}.jpg`;
+        const imagePath = path.join(__dirname, 'data', 'images', imageName);
+
+        fs.mkdirSync(path.dirname(imagePath), { recursive: true });
+        fs.writeFileSync(imagePath, imageBuffer);
+        console.log(`[IMAGE] Sauvegardée: ${imagePath}`);
+
+        // 2. Lancer le pipeline OCR Python (identique à avant)
+        const pythonScript = path.join(__dirname, 'ocr', 'pipeline.py');
+        const proc = spawn('python', [pythonScript, imagePath, caption, telephone, DB_PATH]);
+
+        let stdout = '', stderr = '';
+        proc.stdout.on('data', d => stdout += d.toString());
+        proc.stderr.on('data', d => stderr += d.toString());
+
+        proc.on('close', async code => {
+            if (code === 0) {
+                try {
+                    const result = JSON.parse(stdout.trim().split('\n').pop());
+                    console.log(`[OCR] Succès: ${JSON.stringify(result)}`);
+                    const emoji = result.statut_ocr === 'ok' ? '✅' : '⏳';
+                    await sendReaction(chatId, emoji);
+                } catch (e) {
+                    console.log(`[OCR] Sortie brute: ${stdout}`);
+                    await sendReaction(chatId, '⏳');
+                }
+            } else {
+                console.error(`[OCR] Erreur (code ${code}): ${stderr}`);
+                await sendReaction(chatId, '❌');
+            }
+        });
+
+    } catch (err) {
+        console.error(`[ERREUR] Traitement message: ${err.message}`);
+        await sendReaction(chatId, '❌');
+    }
+});
+
+// ─── Endpoint utilitaire : lister les chats pour trouver le GROUP_CHAT_ID ───
+// GET /chats → appelle Green API et retourne la liste des groupes
+app.get('/chats', async (req, res) => {
+    try {
+        const response = await axios.get(`${GREEN_API_BASE}/getChats/${GREEN_API_TOKEN}`);
+        const groups = response.data.filter(c => c.id.endsWith('@g.us'));
+        res.json(groups.map(g => ({ name: g.name, chatId: g.id })));
+    } catch (err) {
+        res.status(500).json({ error: err.response?.data || err.message });
+    }
+});
+
+// ─── Health check ────────────────────────────────────────────────────────────
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', group: GROUP_CHAT_ID || 'non configuré' });
+});
 
 app.listen(PORT, () => {
-    console.log(`🚀 Webhook WhatsApp prêt sur le port ${PORT}`);
-    console.log(`   Chemin: ${WEBHOOK_PATH}`);
+    console.log(`🚀 Webhook Green API prêt sur le port ${PORT}`);
     console.log(`   DB: ${DB_PATH}`);
+    console.log(`   Groupe cible: ${GROUP_CHAT_ID || '⚠️  GROUP_CHAT_ID non défini'}`);
 });
