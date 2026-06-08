@@ -1,0 +1,2 @@
+id,date_reception,nom_legende,telephone,montant,id_transaction,date_transaction,statut_ocr,confiance,chemin_image
+2,2026-06-08 13:00:06,مصطفي عبد الله,22242413948,,,26-06-06,pending,0.4,/app/data/images/PHOTO-22242413948-1780923605917.jpg

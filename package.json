@@ -1,0 +1,16 @@
+{
+  "name": "whatsapp-receipt-ocr",
+  "version": "1.0.0",
+  "description": "WhatsApp Cloud API webhook + OCR pipeline for Bankily receipts",
+  "main": "webhook.js",
+  "scripts": {
+    "start": "node webhook.js",
+    "dev": "node --watch webhook.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5",
+    "morgan": "^1.10.0"
+  }
+}

@@ -1,0 +1,5 @@
+id,date_reception,nom_legende,telephone,montant,id_transaction,date_transaction,statut_ocr,confiance,chemin_image
+2,2026-06-08 13:00:06,مصطفي عبد الله,22242413948,,,26-06-06,pending,0.4,/app/data/images/PHOTO-22242413948-1780923605917.jpg
+3,2026-06-08 13:53:12,مصطفي عبد الله,22242413948,,,26-06-06,pending,0.4,/app/data/images/PHOTO-22242413948-1780926791514.jpg
+4,2026-06-08 14:06:50,مصطفي عبد الله,22242413948,200.0,2858809260606153014,26-06-2006,ok,1.0,/app/data/images/PHOTO-22242413948-1780927609290.jpg
+1,2026-06-08 14:22:53,مصطفي عبد الله,22242413948,200.0,2858809260606153014,26-06-2006,ok,1.0,/app/data/images/PHOTO-22242413948-1780928572744.jpg
