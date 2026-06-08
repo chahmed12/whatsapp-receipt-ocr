@@ -22,18 +22,18 @@ const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID;
 app.use(morgan('combined'));
 app.use(express.json());
 
-// ─── Envoyer une réaction (Green API ne supporte pas les réactions,
-//     on envoie un message texte à la place) ───────────────────────────────
-async function sendReaction(chatId, emoji) {
+// ─── Envoyer une réaction emoji sur un message spécifique ───────────────────
+async function sendReaction(chatId, messageId, emoji) {
     try {
         await axios.post(
-            `${GREEN_API_BASE}/sendMessage/${GREEN_API_TOKEN}`,
+            `${GREEN_API_BASE}/sendReaction/${GREEN_API_TOKEN}`,
             {
                 chatId,
-                message: emoji
+                messageId,
+                reaction: emoji
             }
         );
-        console.log(`[REACTION] ${emoji} envoyée dans ${chatId}`);
+        console.log(`[REACTION] ${emoji} sur message ${messageId}`);
     } catch (err) {
         console.error(`[REACTION] Erreur: ${err.response?.data || err.message}`);
     }
@@ -52,11 +52,10 @@ app.post('/webhook', async (req, res) => {
 
     const body = req.body;
 
-    // DEBUG TEMPORAIRE
-    console.log('[DEBUG]', JSON.stringify(body, null, 2));
+    // Ignorer tout ce qui n'est pas un message entrant
     if (body.typeWebhook !== 'incomingMessageReceived') return;
 
-    const { messageData, senderData } = body;
+    const { messageData, senderData, idMessage } = body;
 
     // Ignorer les messages qui ne sont pas des images
     if (messageData?.typeMessage !== 'imageMessage') return;
@@ -107,20 +106,20 @@ app.post('/webhook', async (req, res) => {
                     const result = JSON.parse(stdout.trim().split('\n').pop());
                     console.log(`[OCR] Succès: ${JSON.stringify(result)}`);
                     const emoji = result.statut_ocr === 'ok' ? '✅' : '⏳';
-                    await sendReaction(chatId, emoji);
+                    await sendReaction(chatId, idMessage, emoji);
                 } catch (e) {
                     console.log(`[OCR] Sortie brute: ${stdout}`);
-                    await sendReaction(chatId, '⏳');
+                    await sendReaction(chatId, idMessage, '⏳');
                 }
             } else {
                 console.error(`[OCR] Erreur (code ${code}): ${stderr}`);
-                await sendReaction(chatId, '❌');
+                await sendReaction(chatId, idMessage, '❌');
             }
         });
 
     } catch (err) {
         console.error(`[ERREUR] Traitement message: ${err.message}`);
-        await sendReaction(chatId, '❌');
+        await sendReaction(chatId, idMessage, '❌');
     }
 });
 
