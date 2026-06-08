@@ -131,7 +131,33 @@ app.post(WEBHOOK_PATH, async (req, res) => {
             console.error(`[ERREUR] Traitement message: ${err.message}`);
         }
     }
-});
+}); const axios = require('axios');
+
+async function rejoindreLeGroupe() {
+    try {
+        const response = await axios.post(
+            `https://graph.facebook.com/v21.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/groups`,
+            {
+                invite_code: "L4ee7bAJSYf99tu2TBc7SM"
+            },
+            {
+                headers: {
+                    'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+        console.log("✅ Le Bot a rejoint le groupe avec succès !", response.data);
+    } catch (error) {
+        console.error("❌ Erreur lors de l'inscription au groupe :", error.response?.data || error.message);
+    }
+}
+
+// Supprimez ou commentez cette ligne une fois que le bot est dans le groupe !
+rejoindreLeGroupe();
+
+
+
 
 app.listen(PORT, () => {
     console.log(`🚀 Webhook WhatsApp prêt sur le port ${PORT}`);
