@@ -139,7 +139,9 @@ async function rejoindreLeGroupe() {
         const response = await axios.post(
             `https://graph.facebook.com/v21.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/groups`,
             {
-                invite_code: "L4ee7bAJSYf99tu2TBc7SM"
+                messaging_product: "whatsapp", // Ajouté (Obligatoire)
+                invite_code: "L4ee7bAJSYf99tu2TBc7SM",
+                subject: "Association Jeddetta" // Ajouté (Obligatoire - Nom de votre groupe)
             },
             {
                 headers: {
@@ -154,10 +156,8 @@ async function rejoindreLeGroupe() {
     }
 }
 
-// Supprimez ou commentez cette ligne une fois que le bot est dans le groupe !
+// Lancement automatique au démarrage
 rejoindreLeGroupe();
-
-
 
 
 app.listen(PORT, () => {
