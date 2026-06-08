@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const morgan = require('morgan');
+const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -131,7 +132,7 @@ app.post(WEBHOOK_PATH, async (req, res) => {
             console.error(`[ERREUR] Traitement message: ${err.message}`);
         }
     }
-}); const axios = require('axios');
+});
 
 async function rejoindreLeGroupe() {
     try {
