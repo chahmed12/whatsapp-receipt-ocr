@@ -52,7 +52,8 @@ app.post('/webhook', async (req, res) => {
 
     const body = req.body;
 
-    // Ignorer tout ce qui n'est pas un message entrant
+    // DEBUG TEMPORAIRE
+    console.log('[DEBUG]', JSON.stringify(body, null, 2));
     if (body.typeWebhook !== 'incomingMessageReceived') return;
 
     const { messageData, senderData } = body;
