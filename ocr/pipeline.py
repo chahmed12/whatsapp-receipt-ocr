@@ -2,10 +2,12 @@ import sys
 import json
 import re
 import os
+import base64
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import requests
 import pytesseract
 from preprocessor import preprocess, save_debug
 from db.database import sauvegarder_recu
@@ -16,6 +18,27 @@ if platform.system() == 'Windows':
 # Sur Linux (Docker), tesseract est dans le PATH par défaut
 
 CUSTOM_CONFIG = r'--oem 3 --psm 4 -l fra+ara'
+
+def google_vision_ocr(image_path, api_key):
+    url = f'https://vision.googleapis.com/v1/images:annotate?key={api_key}'
+    with open(image_path, 'rb') as f:
+        img_b64 = base64.b64encode(f.read()).decode()
+    payload = {
+        'requests': [{
+            'image': {'content': img_b64},
+            'features': [{'type': 'TEXT_DETECTION'}]
+        }]
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        texts = data.get('responses', [{}])[0].get('textAnnotations', [])
+        if texts:
+            return texts[0].get('description', '')
+    except Exception as e:
+        print(f"[GOOGLE_VISION] Erreur: {e}", file=sys.stderr)
+    return None
 
 def _clean_text(text):
     return text.replace('\u200e', '').replace('\u200f', '')
@@ -82,7 +105,6 @@ def run(image_path, caption, telephone, db_path):
     id_transaction = extract_transaction_id(ocr_text)
     date_transaction = extract_date(ocr_text)
 
-    lines = [l.strip() for l in ocr_text.split('\n') if l.strip()]
     confiance = 1.0
     if montant is None:
         confiance -= 0.3
@@ -91,7 +113,31 @@ def run(image_path, caption, telephone, db_path):
     if date_transaction is None:
         confiance -= 0.2
 
-    statut = 'ok' if confiance >= 0.7 else 'pending'
+    # Fallback Google Vision si confiance < 0.7
+    if confiance < 0.7 and os.environ.get('FALLBACK_PROVIDER') == 'google':
+        api_key = os.environ.get('FALLBACK_API_KEY')
+        if api_key:
+            print(f"[FALLBACK] Tentative Google Vision...", file=sys.stderr)
+            vision_text = google_vision_ocr(image_path, api_key)
+            if vision_text:
+                v_montant = extract_amount(vision_text)
+                v_id = extract_transaction_id(vision_text)
+                v_date = extract_date(vision_text)
+                # Prendre le meilleur de chaque champ
+                if v_montant is not None and montant is None:
+                    montant = v_montant
+                if v_id is not None and id_transaction is None:
+                    id_transaction = v_id
+                if v_date is not None and date_transaction is None:
+                    date_transaction = v_date
+                # Recalculer la confiance
+                confiance = 1.0
+                if montant is None: confiance -= 0.3
+                if id_transaction is None: confiance -= 0.3
+                if date_transaction is None: confiance -= 0.2
+                ocr_text += f"\n\n[GOOGLE_VISION_FALLBACK]\n{vision_text}"
+
+    statut = 'ok' if confiance >= 0.7 else 'pending' if confiance >= 0.4 else 'failed'
 
     result = {
         'statut_ocr': statut,

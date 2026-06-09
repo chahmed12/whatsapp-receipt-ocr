@@ -114,6 +114,50 @@ def stats_semaine():
     conn.close()
     return dict(row)
 
+def lister_recus_par_telephone(telephone, limit=20):
+    conn = get_connection()
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            "SELECT * FROM recus_extraits WHERE telephone = %s ORDER BY date_reception DESC LIMIT %s",
+            (telephone, limit)
+        )
+        rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def lister_recus_par_date(depuis, jusqua):
+    conn = get_connection()
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            "SELECT * FROM recus_extraits WHERE date_reception >= %s AND date_reception < %s ORDER BY date_reception DESC",
+            (depuis, jusqua)
+        )
+        rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def lister_recus_par_mois(annee, mois):
+    debut = f"{annee}-{mois:02d}-01"
+    if mois == 12:
+        fin = f"{annee+1}-01-01"
+    else:
+        fin = f"{annee}-{mois+1:02d}-01"
+    return lister_recus_par_date(debut, fin)
+
+def stats_telephone(telephone):
+    conn = get_connection()
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("""
+            SELECT
+                COUNT(*)                          AS total,
+                COALESCE(SUM(montant), 0)         AS montant_total
+            FROM recus_extraits
+            WHERE telephone = %s
+        """, (telephone,))
+        row = cur.fetchone()
+    conn.close()
+    return dict(row)
+
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == 'init':
         initialiser_db()
