@@ -182,10 +182,21 @@ The pipeline supports two Bankily receipt formats:
 
 1. Create account at [green-api.com](https://green-api.com)
 2. Create a WhatsApp instance → get `GREEN_API_ID` and `GREEN_API_TOKEN`
-3. Set webhook URL in Green API settings to `https://your-domain.com/webhook`
+3. Set webhook URL in Green API settings to `https://votre-domaine.com/webhook`
 4. Use `GET /chats` to find your group's `chatId`
 
-For local development, use [ngrok](https://ngrok.com):
+## Deployment (Render)
+
+Le service web et la base de données PostgreSQL sont déployés sur [Render](https://render.com).
+
+1. Créer une base PostgreSQL sur Render → copier le `DATABASE_URL` interne
+2. Créer un Web Service :
+   - Build Command : `npm install && pip install -r ocr/requirements.txt`
+   - Start Command : `npm start`
+   - Ajouter les variables d'environnement (`.env`) dans les Render Environment Variables
+3. Définir le webhook Green API vers `https://votre-app.onrender.com/webhook`
+
+### Développement local avec ngrok
 
 ```bash
 ngrok http 3000
