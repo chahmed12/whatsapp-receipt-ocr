@@ -1,41 +1,58 @@
 # WhatsApp Receipt OCR
 
-Automatic Bankily payment receipt extraction from WhatsApp group messages using OCR, powered by Meta's official WhatsApp Cloud API.
+Automatic Bankily payment receipt extraction from WhatsApp group messages using OCR, powered by **Green API**.
 
 ## Architecture
 
 ```
-WhatsApp Cloud API (Meta)
-        │ webhook
-        ▼
-┌────────────────┐     ┌────────────────┐     ┌──────────────┐
-│  webhook.js    │────▶│  pipeline.py   │────▶│   SQLite     │
-│  (Node.js)     │     │  (Python OCR)  │     │  recus.db    │
-└────────────────┘     └────────────────┘     └──────────────┘
-        │                                            │
-        ▼                                            ▼
-   Reaction ✅/⏳/❌                           recus_extraits
+WhatsApp
+    │
+    ▼
+Green API ──▶ webhook.js (Node.js/Express)
+                    │
+           Download image ──▶ data/images/
+                    │
+           Spawn Python ──▶ pipeline.py
+                    │              │
+                    │    preprocessor.py (OpenCV)
+                    │      → grayscale, OTSU, denoise, 200% upscale
+                    │              │
+                    │    Tesseract OCR (fra + ara)
+                    │              │
+                    │    Regex: amount, tx_id, date
+                    │              │
+                    ▼              ▼
+           PostgreSQL ◀── sauvegarder_recu()
+                    │
+                    ▼
+           Reaction ✅ / ⏳ / ❌
+           Dashboard 📊 (GET /dashboard)
+           API JSON  (GET /api/recus)
+           CSV Export (GET /export)
+           Weekly report (every Monday 8 AM)
 ```
 
 ## Features
 
-- Webhook WhatsApp Cloud API sécurisé (signature X-Hub-Signature-256)
-- OCR bilingue français + arabe (Pytesseract)
-- Extraction automatique : montant, date, ID transaction
-- Dédoublonnage par ID transaction unique
-- Statut OCR : `ok` / `pending` / `failed`
+- Webhook Green API — reçoit les images d'un groupe WhatsApp
+- OCR bilingue français + arabe (Tesseract + pytesseract)
+- Prétraitement d'image (OpenCV : OTSU, débruitage, resize 200%)
+- Extraction automatique : montant (MRU), date, ID transaction
+- Dédoublonnage par ID transaction unique (`ON CONFLICT DO NOTHING`)
+- Score de confiance (0-1) et statut : `ok` / `pending` / `failed`
 - Réaction automatique ✅ / ⏳ / ❌ sur chaque message
-- Prétraitement d'image (OTSU, resize 200%, débruitage)
-- Stockage SQLite intégré
+- Dashboard HTML protégé par mot de passe
+- API JSON et export CSV
+- Rapport hebdomadaire automatique (lundi 8h)
 - Conteneurisé (Docker)
 
 ## Prerequisites
 
 - Node.js 18+
 - Python 3.11+
-- Tesseract OCR (`fra` + `ara`)
-- Docker (optionnel)
-- Compte Meta Developer + WhatsApp Cloud API
+- Tesseract OCR avec langues `fra` + `ara`
+- PostgreSQL (ou Docker)
+- Compte [Green API](https://green-api.com)
 
 ## Quick Start
 
@@ -48,12 +65,9 @@ pip install -r ocr/requirements.txt
 
 # 2. Configure environment
 cp .env.example .env
-# Edit .env with your WhatsApp Cloud API credentials
+# Edit .env with your Green API credentials (see below)
 
-# 3. Initialize database
-python db/database.py init data/recus.db
-
-# 4. Start server
+# 3. Start server
 npm start
 ```
 
@@ -62,7 +76,7 @@ npm start
 ```bash
 # 1. Configure environment
 cp .env.example .env
-# Edit .env with your WhatsApp Cloud API credentials
+# Edit .env with your credentials
 
 # 2. Build and run
 docker compose up -d
@@ -71,56 +85,66 @@ docker compose up -d
 docker compose logs -f
 ```
 
+### Windows Quick Setup
+
+```powershell
+.\start.ps1
+```
+
 ## Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `WHATSAPP_TOKEN` | WhatsApp Cloud API System User Token |
-| `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp Phone Number ID |
-| `WHATSAPP_API_VERSION` | Meta API version (default: v21.0) |
-| `VERIFY_TOKEN` | Webhook verification token (choose any string) |
-| `PORT` | Server port (default: 3000) |
-| `DB_PATH` | SQLite database path (default: data/recus.db) |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GREEN_API_ID` | Yes | Green API instance ID (e.g. `7107646804`) |
+| `GREEN_API_TOKEN` | Yes | Green API access token |
+| `GROUP_CHAT_ID` | Yes | Target WhatsApp group chat ID (ends with `@g.us`) |
+| `MY_NUMBER` | Yes | Bot's own number to ignore self-messages (e.g. `22242413948@c.us`) |
+| `DATABASE_URL` | Yes | PostgreSQL connection string (e.g. `postgresql://user:pass@host:5432/db`) |
+| `DASHBOARD_PASS` | No | Dashboard password (default: `admin123`) |
+| `PORT` | No | Server port (default: `3000`) |
 
 ## Project Structure
 
 ```
 whatsapp-receipt-ocr/
-├── webhook.js              # WhatsApp Cloud API webhook server
+├── webhook.js              # Entry point — Express webhook server (Green API)
 ├── package.json            # Node.js dependencies
+├── Dockerfile              # Multi-stage container (Python + Node + Tesseract)
 ├── docker-compose.yml      # Docker orchestration
-├── Dockerfile              # Container image
+├── start.ps1               # Windows setup script
+├── .env.example            # Environment variable template
 ├── ocr/
-│   ├── pipeline.py         # OCR extraction pipeline
-│   ├── preprocessor.py     # Image preprocessing
+│   ├── pipeline.py         # OCR extraction pipeline (Tesseract + regex)
+│   ├── preprocessor.py     # Image preprocessing (OpenCV)
 │   └── requirements.txt    # Python dependencies
 ├── db/
-│   ├── schema.sql          # SQLite schema
-│   └── database.py         # Database operations
+│   ├── database.py         # PostgreSQL operations (psycopg2)
+│   └── schema.sql          # Legacy SQLite schema
 └── data/
     ├── images/             # Received receipt images
-    └── recus.db            # SQLite database
+    │   └── debug/          # Preprocessed (debug) images
+    └── recus.db            # SQLite (legacy)
 ```
 
 ## Database Schema
 
-### `recus_extraits`
+### `recus_extraits` (PostgreSQL)
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | INTEGER | Auto-increment primary key |
+| `id` | SERIAL | Auto-increment primary key |
+| `date_reception` | TIMESTAMP | Reception timestamp (default NOW()) |
 | `nom_legende` | TEXT | Member name from image caption |
-| `telephone` | VARCHAR | Sender phone number |
-| `montant` | NUMERIC | Extracted amount (MRU) |
-| `id_transaction` | VARCHAR | Unique transaction ID |
+| `telephone` | TEXT | Sender phone number |
+| `montant` | NUMERIC(10,2) | Extracted amount (MRU) |
+| `id_transaction` | TEXT (UNIQUE) | Unique transaction ID |
 | `date_transaction` | TEXT | Transaction date |
 | `chemin_image` | TEXT | Path to saved image |
 | `statut_ocr` | TEXT | `ok` / `pending` / `failed` |
-| `raw_ocr_text` | TEXT | Raw OCR output |
-| `confiance` | REAL | Confidence score (0-1) |
-| `date_reception` | TIMESTAMP | Reception timestamp |
+| `raw_ocr_text` | TEXT | Full raw OCR output |
+| `confiance` | NUMERIC(3,2) | Confidence score (0.00 to 1.00) |
 
-## OCR Extraction
+## OCR Pipeline
 
 The pipeline supports two Bankily receipt formats:
 
@@ -136,31 +160,48 @@ The pipeline supports two Bankily receipt formats:
 رقم المعاملة TRO7206911753
 ```
 
+**Confidence scoring:**
+- Base = 1.0
+- −0.3 if amount missing
+- −0.3 if transaction ID missing
+- −0.2 if date missing
+- `ok` ≥ 0.7, `pending` < 0.7
+
+## Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /webhook` | Green API webhook receiver |
+| `GET /dashboard?pass=...` | Protected HTML dashboard |
+| `GET /api/recus?pass=...` | JSON API for receipts |
+| `GET /export?pass=...` | CSV export |
+| `GET /chats` | List available group chats |
+| `GET /health` | Health check |
+
+## Webhook Setup (Green API)
+
+1. Create account at [green-api.com](https://green-api.com)
+2. Create a WhatsApp instance → get `GREEN_API_ID` and `GREEN_API_TOKEN`
+3. Set webhook URL in Green API settings to `https://your-domain.com/webhook`
+4. Use `GET /chats` to find your group's `chatId`
+
+For local development, use [ngrok](https://ngrok.com):
+
+```bash
+ngrok http 3000
+```
+
 ## Development
 
 ```bash
 # Watch mode (auto-restart on changes)
 npm run dev
 
-# Test database
-python test_pipeline.py
+# Test OCR pipeline directly
+python ocr/pipeline.py data/images/PHOTO-xxx.jpg "caption" "22242413948@c.us"
 
 # List stored receipts
-python -c "from db.database import lister_recus; [print(r) for r in lister_recus('data/recus.db')]"
-```
-
-## Webhook Setup (Meta)
-
-1. Create app at [developers.facebook.com](https://developers.facebook.com)
-2. Add WhatsApp product
-3. Configure webhook: `https://your-domain.com/webhook`
-4. Subscribe to `messages` webhook field
-5. Verify with your `VERIFY_TOKEN`
-
-For local development, use [ngrok](https://ngrok.com):
-
-```bash
-ngrok http 3000
+python -c "from db.database import lister_recus; [print(r) for r in lister_recus()]"
 ```
 
 ## License
