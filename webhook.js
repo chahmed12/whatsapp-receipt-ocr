@@ -20,6 +20,23 @@ const DASHBOARD_PASS = process.env.DASHBOARD_PASS || 'admin123';
 app.use(morgan('combined'));
 app.use(express.json());
 
+// ─── Init DB au démarrage ────────────────────────────────────────────────────
+async function initDB() {
+    try {
+        await runPython(['-c', `
+import sys
+sys.path.insert(0, '/app/ocr')
+sys.path.insert(0, '/app')
+from db.database import initialiser_db
+initialiser_db()
+print('[DB] Table initialisée')
+`]);
+        console.log('[DB] PostgreSQL prêt');
+    } catch (err) {
+        console.error('[DB] Erreur init:', err.message);
+    }
+}
+
 // ─── Réaction emoji sur un message ──────────────────────────────────────────
 async function sendReaction(chatId, messageId, emoji) {
     try {
@@ -320,8 +337,9 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok', group: GROUP_CHAT_ID || 'non configuré' });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
     console.log(`🚀 Webhook Green API prêt sur le port ${PORT}`);
     console.log(`   Groupe cible: ${GROUP_CHAT_ID || '⚠️  non défini'}`);
     console.log(`   Dashboard: http://localhost:${PORT}/dashboard`);
+    await initDB(); // ← crée la table si elle n'existe pas
 });
