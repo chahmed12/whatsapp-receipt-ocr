@@ -267,6 +267,9 @@ app.post('/webhook', async (req, res) => {
     res.sendStatus(200);
 
     const body = req.body;
+    // Log the type of webhook received for debugging
+    console.log(`[WEBHOOK RAW] typeWebhook: ${body.typeWebhook}, typeMessage: ${body.messageData?.typeMessage}, chatId: ${body.senderData?.chatId}`);
+
     if (body.typeWebhook !== 'incomingMessageReceived') return;
 
     const { messageData, senderData, idMessage } = body;
