@@ -5,6 +5,12 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const morgan = require('morgan');
+const { Pool } = require('pg');
+
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -93,15 +99,98 @@ async function processImage({ imagePath, caption, telephone, chatId, idMessage, 
         const emoji = result.statut_ocr === 'ok' ? '✅' : result.statut_ocr === 'failed' ? '❌' : '⏳';
         await sendReaction(chatId, idMessage, emoji);
 
-        // Notification échec
-        if (result.statut_ocr === 'failed' || (result.confiance && result.confiance < 0.4)) {
-            const msg =
-                `❌ Désolé ${senderName}, je n'ai pas pu lire ton reçu.\n` +
-                `Essaie avec une photo plus nette (bien cadrée, sans ombre).`;
-            await sendMessage(telephone, msg);
+        // Envoyer un résumé à l'Administrateur
+        const adminPhone = process.env.ADMIN_PHONE;
+        if (adminPhone) {
+            const montantTexte = result.montant ? `${result.montant}` : 'Inconnu';
+            const adminMsg = `Nouveau reçu de ${senderName} : ${montantTexte} MRU. Statut: ${emoji}`;
+            await sendMessage(adminPhone, adminMsg);
+        }
+
+        // Notification d'échec UNIQUEMENT en message privé (silencieux dans le groupe)
+        const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID;
+        if (!GROUP_CHAT_ID || chatId !== GROUP_CHAT_ID) {
+            if (result.statut_ocr === 'failed' || (result.confiance && result.confiance < 0.4)) {
+                const msg =
+                    `❌ Désolé ${senderName}, je n'ai pas pu lire ton reçu.\n` +
+                    `Essaie avec une photo plus nette (bien cadrée, sans ombre).`;
+                await sendMessage(chatId, msg);
+            }
         }
     } catch (err) {
         console.error(`[ERREUR] ${senderName}: ${err.message}`);
+        await sendReaction(chatId, idMessage, '❌');
+    }
+}
+
+// ─── Traiter une question RAG (Intelligence Artificielle) ──────────────────
+async function processRag(question, chatId, idMessage, senderName) {
+    if (!process.env.GROQ_API_KEY || !process.env.HF_API_KEY) {
+        console.log(`[RAG] Ignoré car GROQ_API_KEY ou HF_API_KEY manquant.`);
+        return;
+    }
+
+    try {
+        await sendReaction(chatId, idMessage, '⏳');
+
+        // 1. Vectorisation de la question avec HuggingFace
+        const hfResponse = await axios.post(
+            'https://api-inference.huggingface.co/pipeline/feature-extraction/intfloat/multilingual-e5-small',
+            { inputs: question },
+            { headers: { Authorization: `Bearer ${process.env.HF_API_KEY}` } }
+        );
+        
+        let embedding = hfResponse.data;
+        if (Array.isArray(embedding) && Array.isArray(embedding[0])) {
+            embedding = embedding[0]; // Gérer le format de tableau imbriqué
+        }
+        
+        // 2. Recherche des documents pertinents dans PostgreSQL
+        const pgvectorStr = `[${embedding.join(',')}]`;
+        const res = await pool.query(`
+            SELECT titre, contenu, 1 - (embedding <=> $1::vector) as similarity
+            FROM connaissances_association
+            WHERE 1 - (embedding <=> $1::vector) > 0.70
+            ORDER BY similarity DESC
+            LIMIT 3
+        `, [pgvectorStr]);
+
+        let context = "";
+        if (res.rows.length > 0) {
+            context = res.rows.map(r => `[Document: ${r.titre}]\n${r.contenu}`).join('\n\n');
+        } else {
+            context = "Aucun document spécifique trouvé. Réponds de manière générale et courtoise.";
+        }
+
+        // 3. Génération de la réponse en Arabe avec Groq
+        const systemPrompt = `Tu es l'assistant intelligent et officiel d'une association.
+Tu dois répondre aux questions des membres poliment, de façon concise et professionnelle.
+CRITIQUE: Tu dois répondre EXCLUSIVEMENT EN LANGUE ARABE (Arabe clair et naturel).
+Utilise les documents suivants pour baser ta réponse, si pertinents :
+${context}`;
+
+        const groqResponse = await axios.post(
+            'https://api.groq.com/openai/v1/chat/completions',
+            {
+                model: 'llama3-70b-8192',
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: question }
+                ],
+                temperature: 0.3,
+                max_tokens: 500
+            },
+            { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
+        );
+
+        const reply = groqResponse.data.choices[0]?.message?.content;
+        if (reply) {
+            await sendMessage(chatId, reply);
+            await sendReaction(chatId, idMessage, '🤖');
+        }
+
+    } catch (err) {
+        console.error(`[RAG ERREUR] ${err.message}`);
         await sendReaction(chatId, idMessage, '❌');
     }
 }
@@ -122,18 +211,14 @@ async function processCommand(cmd, chatId, idMessage, senderName, telephone) {
             `!aide — Cette liste`;
     } else if (cmd === '!stats') {
         try {
-            const stdout = await runPython(['-c', `
-import sys, os, json
-sys.path.insert(0, '/app/ocr')
-sys.path.insert(0, '/app')
-from db.database import stats_semaine
-s = stats_semaine()
-for k, v in s.items():
-    if hasattr(v, 'isoformat'): s[k] = v.isoformat()
-    elif v is not None: s[k] = str(v) if not isinstance(v, (int, float, str, bool)) else v
-print(json.dumps(s))
-`]);
-            const stats = JSON.parse(stdout);
+            const res = await pool.query(`
+                SELECT
+                    COUNT(*) AS total,
+                    COALESCE(SUM(montant), 0) AS montant_total
+                FROM recus_extraits
+                WHERE date_reception >= NOW() - INTERVAL '7 days'
+            `);
+            const stats = res.rows[0];
             reply =
                 `📊 *Stats de la semaine*\n` +
                 `━━━━━━━━━━━━━━━━━━\n` +
@@ -144,17 +229,14 @@ print(json.dumps(s))
         }
     } else if (cmd === '!moi') {
         try {
-            const safeTelephone = telephone.replace(/'/g, "''");
-            const stdout = await runPython(['-c', `
-import sys, os, json
-sys.path.insert(0, '/app/ocr')
-sys.path.insert(0, '/app')
-from db.database import lister_recus_par_telephone, stats_telephone
-recus = lister_recus_par_telephone("${safeTelephone}")
-stats = stats_telephone("${safeTelephone}")
-print(json.dumps({'total': stats['total'], 'montant_total': float(stats['montant_total'])}))
-`]);
-            const data = JSON.parse(stdout);
+            const res = await pool.query(`
+                SELECT
+                    COUNT(*) AS total,
+                    COALESCE(SUM(montant), 0) AS montant_total
+                FROM recus_extraits
+                WHERE telephone = $1
+            `, [telephone]);
+            const data = res.rows[0];
             reply =
                 `👤 *Mes stats*\n` +
                 `━━━━━━━━━━━━━━━━\n` +
@@ -165,53 +247,37 @@ print(json.dumps({'total': stats['total'], 'montant_total': float(stats['montant
         }
     } else if (cmd === '!dernier') {
         try {
-            const stdout = await runPython(['-c', `
-import sys, os, json
-sys.path.insert(0, '/app/ocr')
-sys.path.insert(0, '/app')
-from db.database import lister_recus
-recus = lister_recus(limit=1)
-if not recus:
-    print(json.dumps(None))
-else:
-    r = recus[0]
-    for k, v in r.items():
-        if hasattr(v, 'isoformat'): r[k] = v.isoformat()
-        elif v is not None: r[k] = str(v) if not isinstance(v, (int, float, str, bool)) else v
-    print(json.dumps(r))
-`]);
-            const r = JSON.parse(stdout);
+            const res = await pool.query(`
+                SELECT * FROM recus_extraits ORDER BY date_reception DESC LIMIT 1
+            `);
+            const r = res.rows[0];
             if (!r) {
                 reply = `📭 Aucun reçu traité pour l'instant.`;
             } else {
+                const confMsg = r.confiance ? Math.round(Number(r.confiance) * 100) + '%' : '—';
+                const dateStr = r.date_transaction ? r.date_transaction : '—';
                 reply =
                     `📄 *Dernier reçu*\n` +
                     `━━━━━━━━━━━━━━━━\n` +
                     `👤 ${r.nom_legende || r.telephone || '—'}\n` +
                     `💰 ${r.montant || '—'} MRU\n` +
                     `🔖 ${r.id_transaction || '—'}\n` +
-                    `📅 ${r.date_transaction || '—'}\n` +
-                    `✅ Statut: ${r.statut_ocr} (${r.confiance ? Math.round(r.confiance * 100) + '%' : '—'})`;
+                    `📅 ${dateStr}\n` +
+                    `✅ Statut: ${r.statut_ocr} (${confMsg})`;
             }
         } catch (err) {
             reply = `❌ Erreur: ${err.message}`;
         }
     } else if (cmd === '!aujourdhui') {
         try {
-            const today = new Date();
-            const start = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}T00:00:00`;
-            const end = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}T23:59:59`;
-            const stdout = await runPython(['-c', `
-import sys, os, json
-sys.path.insert(0, '/app/ocr')
-sys.path.insert(0, '/app')
-from db.database import lister_recus_par_date
-recus = lister_recus_par_date("${start}", "${end}")
-total = len(recus)
-montant = sum(float(r.get('montant') or 0) for r in recus)
-print(json.dumps({'total': total, 'montant_total': montant}))
-`]);
-            const data = JSON.parse(stdout);
+            const res = await pool.query(`
+                SELECT
+                    COUNT(*) AS total,
+                    COALESCE(SUM(montant), 0) AS montant_total
+                FROM recus_extraits
+                WHERE date_reception >= CURRENT_DATE
+            `);
+            const data = res.rows[0];
             reply =
                 `📅 *Récap du jour*\n` +
                 `━━━━━━━━━━━━━━━━\n` +
@@ -277,19 +343,26 @@ app.post('/webhook', async (req, res) => {
     const telephone = senderData?.sender || chatId;
     const senderName = senderData?.senderName || telephone;
 
-    // Commande texte !
-    if (messageData?.typeMessage === 'textMessage') {
-        const text = (messageData.textMessageData?.textMessage || '').trim();
+    // Commande texte (Messages Privés uniquement)
+    if (messageData?.typeMessage === 'textMessage' || messageData?.typeMessage === 'extendedTextMessage') {
+        if (GROUP_CHAT_ID && chatId === GROUP_CHAT_ID) {
+            // Le bot est silencieux dans le groupe de l'association, il ignore le texte
+            return;
+        }
+
+        const text = (messageData.textMessageData?.textMessage || messageData.extendedTextMessageData?.text || '').trim();
         if (text.startsWith('!')) {
             console.log(`[CMD] ${senderName}: ${text}`);
             await processCommand(text.split(/\s+/)[0], chatId, idMessage, senderName, telephone);
+        } else if (text.length > 5) {
+            console.log(`[RAG] Question de ${senderName}: ${text}`);
+            await processRag(text, chatId, idMessage, senderName);
         }
         return;
     }
 
-    // Image
+    // Image (Reçus acceptés dans le Groupe ET en Message Privé)
     if (messageData?.typeMessage !== 'imageMessage') return;
-    if (GROUP_CHAT_ID && chatId !== GROUP_CHAT_ID) return;
     if (MY_NUMBER && senderData?.sender === MY_NUMBER) return;
 
     const downloadUrl = messageData.fileMessageData?.downloadUrl;
@@ -354,15 +427,22 @@ app.listen(PORT, async () => {
 
     // Init DB
     try {
-        await runPython(['-c', `
-import sys
-sys.path.insert(0, '/app/ocr')
-sys.path.insert(0, '/app')
-from db.database import initialiser_db
-initialiser_db()
-print('[DB] Table initialisée')
-`]);
-        console.log('[DB] PostgreSQL prêt');
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS recus_extraits (
+                id               SERIAL PRIMARY KEY,
+                date_reception   TIMESTAMP DEFAULT NOW(),
+                nom_legende      TEXT,
+                telephone        TEXT,
+                montant          NUMERIC(10,2),
+                id_transaction   TEXT UNIQUE,
+                date_transaction TEXT,
+                chemin_image     TEXT,
+                statut_ocr       TEXT,
+                raw_ocr_text     TEXT,
+                confiance        NUMERIC(3,2)
+            );
+        `);
+        console.log('[DB] PostgreSQL prêt (via Node.js pg)');
     } catch (err) {
         console.error('[DB] Erreur init:', err.message);
     }
