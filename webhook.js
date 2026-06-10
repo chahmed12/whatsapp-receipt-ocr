@@ -405,6 +405,17 @@ app.get('/temp/:filename', (req, res) => {
     });
 });
 
+// ─── Route pour injecter les données RAG (Alternative au Shell Render) ──────
+app.get('/seed-database', async (req, res) => {
+    try {
+        const seed = require('./seed_rag');
+        await seed();
+        res.send("<h1>✅ Succès !</h1><p>Les règles de l'association ont été mémorisées par l'Intelligence Artificielle.</p>");
+    } catch (err) {
+        res.status(500).send(`<h1>❌ Erreur</h1><p>${err.message}</p>`);
+    }
+});
+
 // ─── Utilitaires ─────────────────────────────────────────────────────────────
 app.get('/chats', async (req, res) => {
     try {

@@ -44,7 +44,7 @@ async function seed() {
     
     if (!process.env.HF_API_KEY) {
         console.error("❌ ERREUR: HF_API_KEY est manquant dans le fichier .env");
-        process.exit(1);
+        throw new Error("HF_API_KEY est manquant");
     }
 
     try {
@@ -59,8 +59,8 @@ async function seed() {
             );
         `);
         
-        // Optionnel : Vider la table avant d'ajouter les nouveaux documents
-        // await pool.query('TRUNCATE connaissances_association');
+        // Vider la table pour éviter les doublons si on relance
+        await pool.query('TRUNCATE connaissances_association');
 
         for (const doc of documents) {
             console.log(`⏳ Vectorisation de : "${doc.titre}"...`);
@@ -90,9 +90,8 @@ async function seed() {
         console.log("🎉 Terminé ! Votre bot WhatsApp connaît maintenant ces règles.");
     } catch (err) {
         console.error("❌ Erreur pendant l'injection :", err.message);
-    } finally {
-        await pool.end();
+        throw err;
     }
 }
 
-seed();
+module.exports = seed;
